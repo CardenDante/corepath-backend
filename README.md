@@ -1,4 +1,4 @@
-# CorePath Impact Backend API
+<!-- # CorePath Impact Backend API
 
 ## Setup
 
@@ -40,7 +40,8 @@ uvicorn app.main:app --reload
 - pp/api/ - API endpoints
 - pp/services/ - Business logic
 - uploads/ - Local file storage
-- equirements/ - Dependencies
+- 
+equirements/ - Dependencies
 
 ## Features
 
@@ -57,4 +58,4 @@ uvicorn app.main:app --reload
 
 When running, visit:
 - Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+- ReDoc: http://localhost:8000/redoc -->
