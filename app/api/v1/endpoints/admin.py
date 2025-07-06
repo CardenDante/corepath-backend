@@ -4,7 +4,7 @@ CorePath Impact Admin API Endpoints
 Phase 5: Admin panel and system management
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -315,7 +315,6 @@ async def get_order_stats(
     ).group_by(Order.status).all()
     
     # Recent revenue (last 30 days)
-    from datetime import datetime, timedelta
     thirty_days_ago = datetime.utcnow() - timedelta(days=30)
     
     recent_revenue = db.query(func.sum(Order.total_amount)).filter(
@@ -356,24 +355,24 @@ async def get_system_settings(
         data={
             "app": {
                 "name": settings.PROJECT_NAME,
-                "version": settings.VERSION,
+                "version": getattr(settings, 'VERSION', '1.0.0'),
                 "debug": settings.DEBUG
             },
             "features": {
-                "email_enabled": settings.is_email_enabled,
-                "stripe_enabled": settings.is_stripe_enabled,
+                "email_enabled": getattr(settings, 'is_email_enabled', False),
+                "stripe_enabled": getattr(settings, 'is_stripe_enabled', False),
                 "points_system": True,
                 "referral_system": True,
                 "courses": True
             },
             "points": {
-                "signup_bonus": settings.SIGNUP_BONUS_POINTS,
-                "referral_reward": settings.REFERRAL_POINTS,
-                "order_rate": settings.ORDER_POINTS_RATE
+                "signup_bonus": getattr(settings, 'SIGNUP_BONUS_POINTS', 500),
+                "referral_reward": getattr(settings, 'REFERRAL_POINTS', 500),
+                "order_rate": getattr(settings, 'ORDER_POINTS_RATE', 0.01)
             },
             "uploads": {
-                "max_file_size": settings.MAX_FILE_SIZE,
-                "allowed_types": settings.ALLOWED_IMAGE_TYPES
+                "max_file_size": getattr(settings, 'MAX_FILE_SIZE', 5242880),
+                "allowed_types": getattr(settings, 'ALLOWED_IMAGE_TYPES', ['.jpg', '.jpeg', '.png'])
             }
         },
         message="System settings retrieved successfully"
@@ -387,8 +386,6 @@ async def get_user_analytics(
     db: Session = Depends(get_db)
 ):
     """Get user analytics for specified period"""
-    
-    from datetime import datetime, timedelta
     
     end_date = datetime.utcnow()
     start_date = end_date - timedelta(days=days)
@@ -435,8 +432,6 @@ async def get_revenue_analytics(
     db: Session = Depends(get_db)
 ):
     """Get revenue analytics for specified period"""
-    
-    from datetime import datetime, timedelta
     
     end_date = datetime.utcnow()
     start_date = end_date - timedelta(days=days)
@@ -487,12 +482,25 @@ async def get_system_health(
     import os
     from app.core.config import settings
     
-    upload_dir = settings.UPLOAD_DIR
+    upload_dir = getattr(settings, 'UPLOAD_DIR', './uploads')
     uploads_writable = os.access(upload_dir, os.W_OK) if os.path.exists(upload_dir) else False
     
-    # Memory usage (basic check)
-    import psutil
-    memory_usage = psutil.virtual_memory()
+    # Memory usage (basic check) - make it optional
+    try:
+        import psutil
+        memory_usage = psutil.virtual_memory()
+        memory_info = {
+            "total_gb": round(memory_usage.total / (1024**3), 2),
+            "available_gb": round(memory_usage.available / (1024**3), 2),
+            "percent_used": memory_usage.percent
+        }
+    except ImportError:
+        memory_info = {
+            "total_gb": 0,
+            "available_gb": 0,
+            "percent_used": 0,
+            "note": "psutil not installed"
+        }
     
     return create_response(
         data={
@@ -504,11 +512,7 @@ async def get_system_health(
                 "uploads_directory": upload_dir,
                 "writable": uploads_writable
             },
-            "memory": {
-                "total_gb": round(memory_usage.total / (1024**3), 2),
-                "available_gb": round(memory_usage.available / (1024**3), 2),
-                "percent_used": memory_usage.percent
-            },
+            "memory": memory_info,
             "timestamp": datetime.utcnow().isoformat()
         },
         message="System health retrieved successfully"
@@ -623,10 +627,14 @@ async def run_system_cleanup(
     results["sessions_cleaned"] = 0
     
     # Clean up temporary files
-    from app.services.file_service import FileService
-    file_service = FileService()
-    temp_files_deleted = file_service.cleanup_temp_files(24)  # 24 hours old
-    results["temp_files_deleted"] = temp_files_deleted
+    try:
+        from app.services.file_service import FileService
+        file_service = FileService()
+        temp_files_deleted = file_service.cleanup_temp_files(24)  # 24 hours old
+        results["temp_files_deleted"] = temp_files_deleted
+    except Exception as e:
+        results["temp_files_deleted"] = 0
+        results["cleanup_error"] = str(e)
     
     # Clean up expired referrals (placeholder)
     results["expired_referrals_cleaned"] = 0

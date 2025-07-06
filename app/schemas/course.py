@@ -1,12 +1,12 @@
-# app/schemas/course.py - Phase 5 Course Schemas
+# app/schemas/course.py - Fixed for Pydantic v2
 """
 CorePath Impact Course Schemas
-Request/Response models for course system
+Pydantic v2 compatible models for course system
 """
 
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-from pydantic import BaseModel, validator, Field
+from pydantic import BaseModel, field_validator, Field
 
 
 # Base course schemas
@@ -17,7 +17,7 @@ class CourseBase(BaseModel):
     instructor: Optional[str] = Field(None, max_length=200)
     instructor_bio: Optional[str] = None
     duration_hours: Optional[float] = Field(None, ge=0)
-    difficulty_level: str = Field("beginner", regex="^(beginner|intermediate|advanced)$")
+    difficulty_level: str = Field("beginner", pattern="^(beginner|intermediate|advanced)$")
     age_group: Optional[str] = None
     price: float = Field(0.0, ge=0)
     compare_at_price: Optional[float] = Field(None, ge=0)
@@ -31,9 +31,10 @@ class CourseCreate(CourseBase):
     meta_title: Optional[str] = Field(None, max_length=200)
     meta_description: Optional[str] = Field(None, max_length=500)
     
-    @validator('compare_at_price')
-    def validate_compare_at_price(cls, v, values):
-        if v is not None and 'price' in values and v <= values['price']:
+    @field_validator('compare_at_price')
+    @classmethod
+    def validate_compare_at_price(cls, v, info):
+        if v is not None and 'price' in info.data and v <= info.data['price']:
             raise ValueError('compare_at_price must be greater than price')
         return v
 
@@ -46,7 +47,7 @@ class CourseUpdate(BaseModel):
     instructor: Optional[str] = Field(None, max_length=200)
     instructor_bio: Optional[str] = None
     duration_hours: Optional[float] = Field(None, ge=0)
-    difficulty_level: Optional[str] = Field(None, regex="^(beginner|intermediate|advanced)$")
+    difficulty_level: Optional[str] = Field(None, pattern="^(beginner|intermediate|advanced)$")
     age_group: Optional[str] = None
     price: Optional[float] = Field(None, ge=0)
     compare_at_price: Optional[float] = Field(None, ge=0)
@@ -72,14 +73,13 @@ class CourseResponse(CourseBase):
     rating_count: int
     completion_rate: float
     discount_percentage: float
-    thumbnail_url: Optional[str]
-    intro_video_url: Optional[str]
+    thumbnail_url: Optional[str] = None
+    intro_video_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
-    published_at: Optional[datetime]
+    published_at: Optional[datetime] = None
     
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # Module schemas
@@ -104,19 +104,18 @@ class CourseModuleUpdate(BaseModel):
 class CourseModuleResponse(CourseModuleBase):
     id: int
     course_id: int
-    duration_minutes: Optional[int]
+    duration_minutes: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # Lesson schemas
 class CourseLessonBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=300)
     content: Optional[str] = None
-    lesson_type: str = Field("text", regex="^(text|video|quiz|download|interactive)$")
+    lesson_type: str = Field("text", pattern="^(text|video|quiz|download|interactive)$")
     sort_order: int = Field(0, ge=0)
     is_published: bool = True
     is_preview: bool = False
@@ -134,7 +133,7 @@ class CourseLessonCreate(CourseLessonBase):
 class CourseLessonUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=300)
     content: Optional[str] = None
-    lesson_type: Optional[str] = Field(None, regex="^(text|video|quiz|download|interactive)$")
+    lesson_type: Optional[str] = Field(None, pattern="^(text|video|quiz|download|interactive)$")
     sort_order: Optional[int] = Field(None, ge=0)
     is_published: Optional[bool] = None
     is_preview: Optional[bool] = None
@@ -148,16 +147,15 @@ class CourseLessonUpdate(BaseModel):
 class CourseLessonResponse(CourseLessonBase):
     id: int
     module_id: int
-    video_url: Optional[str]
-    duration_minutes: Optional[int]
-    attachments: Optional[List[Dict[str, Any]]]
-    quiz_data: Optional[Dict[str, Any]]
-    passing_score: Optional[int]
+    video_url: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    attachments: Optional[List[Dict[str, Any]]] = None
+    quiz_data: Optional[Dict[str, Any]] = None
+    passing_score: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # Enrollment schemas
@@ -173,14 +171,13 @@ class CourseEnrollmentResponse(BaseModel):
     progress_percentage: float
     completed_lessons: int
     total_time_spent: int
-    last_accessed_at: Optional[datetime]
-    completed_at: Optional[datetime]
+    last_accessed_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     certificate_issued: bool
-    certificate_url: Optional[str]
+    certificate_url: Optional[str] = None
     enrolled_at: datetime
     
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # Progress schemas
@@ -198,15 +195,14 @@ class LessonProgressResponse(BaseModel):
     is_completed: bool
     completion_percentage: float
     time_spent: int
-    quiz_score: Optional[float]
+    quiz_score: Optional[float] = None
     quiz_attempts: int
     quiz_passed: bool
     started_at: datetime
-    completed_at: Optional[datetime]
+    completed_at: Optional[datetime] = None
     last_accessed: datetime
     
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # Review schemas
@@ -222,15 +218,14 @@ class CourseReviewResponse(BaseModel):
     course_id: int
     user_id: int
     rating: int
-    title: Optional[str]
-    content: Optional[str]
+    title: Optional[str] = None
+    content: Optional[str] = None
     is_approved: bool
     is_verified_completion: bool
     created_at: datetime
     updated_at: datetime
     
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # Course with details (for detailed view)
@@ -256,7 +251,8 @@ class CourseSearchFilters(BaseModel):
     sort_by: str = "created_at"
     sort_order: str = "desc"
     
-    @validator('sort_by')
+    @field_validator('sort_by')
+    @classmethod
     def validate_sort_by(cls, v):
         allowed_fields = [
             'created_at', 'title', 'price', 'rating_average', 
@@ -266,7 +262,8 @@ class CourseSearchFilters(BaseModel):
             raise ValueError(f'sort_by must be one of: {", ".join(allowed_fields)}')
         return v
     
-    @validator('sort_order')
+    @field_validator('sort_order')
+    @classmethod
     def validate_sort_order(cls, v):
         if v not in ['asc', 'desc']:
             raise ValueError('sort_order must be "asc" or "desc"')
@@ -280,7 +277,7 @@ class CourseAnalytics(BaseModel):
     completion_rate: float
     average_rating: float
     total_reviews: int
-    average_time_to_complete: Optional[float]  # in hours
+    average_time_to_complete: Optional[float] = None  # in hours
     enrollment_trend: List[Dict[str, Any]]
     popular_lessons: List[Dict[str, Any]]
 
@@ -299,48 +296,20 @@ class CourseCertificateResponse(BaseModel):
     id: int
     enrollment_id: int
     certificate_number: str
-    certificate_url: Optional[str]
+    certificate_url: Optional[str] = None
     verification_code: str
     is_valid: bool
     issued_at: datetime
-    expires_at: Optional[datetime]
+    expires_at: Optional[datetime] = None
     is_expired: bool
     
-    class Config:
-        from_attributes = True
-
-
-# Bulk operations schemas
-class BulkCourseUpdate(BaseModel):
-    course_ids: List[int] = Field(..., min_items=1)
-    updates: Dict[str, Any]
-
-
-class BulkEnrollment(BaseModel):
-    course_id: int
-    user_ids: List[int] = Field(..., min_items=1)
-
-
-# Import/Export schemas
-class CourseExport(BaseModel):
-    format: str = Field("json", regex="^(json|csv|excel)$")
-    include_modules: bool = True
-    include_lessons: bool = True
-    include_enrollments: bool = False
-    include_reviews: bool = False
-
-
-class CourseImport(BaseModel):
-    course_data: Dict[str, Any]
-    import_modules: bool = True
-    import_lessons: bool = True
-    overwrite_existing: bool = False
+    model_config = {"from_attributes": True}
 
 
 # Quiz schemas (for lesson quizzes)
 class QuizQuestion(BaseModel):
     question: str
-    type: str = Field(..., regex="^(multiple_choice|true_false|short_answer)$")
+    type: str = Field(..., pattern="^(multiple_choice|true_false|short_answer)$")
     options: Optional[List[str]] = None  # For multiple choice
     correct_answer: str
     explanation: Optional[str] = None
@@ -350,7 +319,7 @@ class QuizQuestion(BaseModel):
 class QuizCreate(BaseModel):
     title: str
     description: Optional[str] = None
-    questions: List[QuizQuestion] = Field(..., min_items=1)
+    questions: List[QuizQuestion] = Field(..., min_length=1)
     time_limit: Optional[int] = None  # in minutes
     passing_score: int = Field(70, ge=0, le=100)
     allow_retakes: bool = True

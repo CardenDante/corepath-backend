@@ -1,712 +1,618 @@
-# app/api/v1/endpoints/courses.py - Phase 5 Course Endpoints
+# app/services/course_service.py
 """
-CorePath Impact Course API Endpoints
+CorePath Impact Course Service
 Phase 5: Course management and learning system
 """
 
-from datetime import datetime
-from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
-from sqlalchemy import desc
+from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
+from sqlalchemy import and_, or_, desc, func
 from sqlalchemy.orm import Session, joinedload
+from fastapi import HTTPException, status
+import uuid
 
-from app.core.database import get_db
-from app.core.dependencies import get_current_user, get_current_admin, get_optional_user
-from app.models.user import User
-from app.models.course import Course, CourseEnrollment
-from app.services.course_service import CourseService
-from app.services.file_service import FileService
-from app.schemas.course import (
-    CourseCreate, CourseUpdate, CourseResponse, CourseDetailResponse,
-    CourseModuleCreate, CourseModuleResponse, CourseLessonCreate, CourseLessonResponse,
-    CourseEnrollmentCreate, CourseEnrollmentResponse, LessonProgressUpdate, LessonProgressResponse,
-    CourseReviewCreate, CourseReviewResponse, CourseSearchFilters, CourseAnalytics,
-    UserCourseAnalytics, CourseCertificateResponse, QuizSubmission, QuizResult
+from app.models.course import (
+    Course, CourseModule, CourseLesson, CourseEnrollment, 
+    LessonProgress, CourseReview, CourseCertificate
 )
-from app.utils.helpers import create_response
+from app.models.user import User
+from app.schemas.course import (
+    CourseCreate, CourseUpdate, CourseSearchFilters,
+    CourseModuleCreate, CourseLessonCreate, LessonProgressUpdate,
+    CourseReviewCreate, QuizSubmission, QuizResult,
+    CourseAnalytics, UserCourseAnalytics
+)
+from app.utils.helpers import paginate_query
 
-router = APIRouter()
+if TYPE_CHECKING:
+    pass
 
-# Public Course Routes
-@router.get("/", response_model=Dict[str, Any])
-async def get_courses(
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-    q: Optional[str] = Query(None),
-    difficulty_level: Optional[str] = Query(None),
-    age_group: Optional[str] = Query(None),
-    is_free: Optional[bool] = Query(None),
-    min_price: Optional[float] = Query(None, ge=0),
-    max_price: Optional[float] = Query(None, ge=0),
-    min_rating: Optional[float] = Query(None, ge=1, le=5),
-    is_featured: Optional[bool] = Query(None),
-    instructor: Optional[str] = Query(None),
-    sort_by: str = Query("created_at"),
-    sort_order: str = Query("desc"),
-    current_user: Optional[User] = Depends(get_optional_user),
-    db: Session = Depends(get_db)
-):
-    """Get courses with search and filtering"""
-    
-    filters = CourseSearchFilters(
-        q=q,
-        difficulty_level=difficulty_level,
-        age_group=age_group,
-        is_free=is_free,
-        min_price=min_price,
-        max_price=max_price,
-        min_rating=min_rating,
-        is_featured=is_featured,
-        instructor=instructor,
-        sort_by=sort_by,
-        sort_order=sort_order
-    )
-    
-    course_service = CourseService(db)
-    user_id = current_user.id if current_user else None
-    
-    courses = course_service.search_courses(filters, page, per_page, user_id)
-    
-    return create_response(data=courses, message="Courses retrieved successfully")
 
-@router.get("/featured", response_model=List[CourseResponse])
-async def get_featured_courses(
-    limit: int = Query(10, ge=1, le=50),
-    db: Session = Depends(get_db)
-):
-    """Get featured courses"""
-    
-    course_service = CourseService(db)
-    courses = course_service.get_featured_courses(limit)
-    
-    return courses
+class CourseService:
+    def __init__(self, db: Session):
+        self.db = db
 
-@router.get("/popular", response_model=List[CourseResponse])
-async def get_popular_courses(
-    limit: int = Query(10, ge=1, le=50),
-    db: Session = Depends(get_db)
-):
-    """Get popular courses by enrollment"""
-    
-    course_service = CourseService(db)
-    courses = course_service.get_popular_courses(limit)
-    
-    return courses
-
-@router.get("/{course_id}", response_model=CourseDetailResponse)
-async def get_course(
-    course_id: int,
-    current_user: Optional[User] = Depends(get_optional_user),
-    db: Session = Depends(get_db)
-):
-    """Get course details by ID"""
-    
-    course_service = CourseService(db)
-    course = course_service.get_course_by_id(course_id, include_modules=True)
-    
-    if not course:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
+    # Course Management Methods
+    def create_course(self, course_data: CourseCreate, instructor_id: int) -> Course:
+        """Create a new course"""
+        course = Course(
+            **course_data.dict(),
+            instructor_id=instructor_id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
         )
-    
-    # Check if course is published (unless user is admin)
-    if course.status != "published":
-        if not current_user or not current_user.is_admin:
+        
+        self.db.add(course)
+        self.db.commit()
+        self.db.refresh(course)
+        return course
+
+    def get_course_by_id(self, course_id: int, include_modules: bool = False) -> Optional[Course]:
+        """Get course by ID"""
+        query = self.db.query(Course)
+        
+        if include_modules:
+            query = query.options(
+                joinedload(Course.modules).joinedload(CourseModule.lessons)
+            )
+        
+        return query.filter(Course.id == course_id).first()
+
+    def update_course(self, course_id: int, course_data: CourseUpdate) -> Course:
+        """Update a course"""
+        course = self.get_course_by_id(course_id)
+        if not course:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Course not found"
             )
-    
-    # Get recent reviews
-    reviews_result = course_service.get_course_reviews(course_id, page=1, per_page=5)
-    course.recent_reviews = reviews_result["items"]
-    
-    return course
+        
+        update_data = course_data.dict(exclude_unset=True)
+        update_data['updated_at'] = datetime.utcnow()
+        
+        for field, value in update_data.items():
+            setattr(course, field, value)
+        
+        self.db.commit()
+        self.db.refresh(course)
+        return course
 
-@router.get("/{course_id}/reviews", response_model=Dict[str, Any])
-async def get_course_reviews(
-    course_id: int,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-    db: Session = Depends(get_db)
-):
-    """Get course reviews with pagination"""
-    
-    course_service = CourseService(db)
-    reviews = course_service.get_course_reviews(course_id, page, per_page)
-    
-    return create_response(data=reviews, message="Reviews retrieved successfully")
+    def delete_course(self, course_id: int) -> bool:
+        """Delete a course"""
+        course = self.get_course_by_id(course_id)
+        if not course:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Course not found"
+            )
+        
+        # Check if course has enrollments
+        enrollment_count = self.db.query(CourseEnrollment).filter(
+            CourseEnrollment.course_id == course_id
+        ).count()
+        
+        if enrollment_count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete course with existing enrollments"
+            )
+        
+        self.db.delete(course)
+        self.db.commit()
+        return True
 
-# Enrollment Routes
-@router.post("/{course_id}/enroll", response_model=CourseEnrollmentResponse)
-async def enroll_in_course(
-    course_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Enroll user in a course"""
-    
-    course_service = CourseService(db)
-    
-    try:
-        enrollment = course_service.enroll_user(current_user.id, course_id)
+    def search_courses(self, filters: CourseSearchFilters, page: int, per_page: int, user_id: Optional[int] = None) -> Dict[str, Any]:
+        """Search courses with filters"""
+        query = self.db.query(Course).filter(Course.status == "published")
+        
+        # Apply filters
+        if filters.q:
+            search_term = f"%{filters.q}%"
+            query = query.filter(
+                or_(
+                    Course.title.ilike(search_term),
+                    Course.description.ilike(search_term),
+                    Course.tags.ilike(search_term)
+                )
+            )
+        
+        if filters.difficulty_level:
+            query = query.filter(Course.difficulty_level == filters.difficulty_level)
+        
+        if filters.age_group:
+            query = query.filter(Course.age_group == filters.age_group)
+        
+        if filters.is_free is not None:
+            if filters.is_free:
+                query = query.filter(Course.price == 0)
+            else:
+                query = query.filter(Course.price > 0)
+        
+        if filters.min_price is not None:
+            query = query.filter(Course.price >= filters.min_price)
+        
+        if filters.max_price is not None:
+            query = query.filter(Course.price <= filters.max_price)
+        
+        if filters.min_rating is not None:
+            query = query.filter(Course.rating_average >= filters.min_rating)
+        
+        if filters.is_featured is not None:
+            query = query.filter(Course.is_featured == filters.is_featured)
+        
+        if filters.instructor:
+            query = query.join(User).filter(
+                User.full_name.ilike(f"%{filters.instructor}%")
+            )
+        
+        # Apply sorting
+        if filters.sort_by == "rating":
+            order_col = Course.rating_average
+        elif filters.sort_by == "price":
+            order_col = Course.price
+        elif filters.sort_by == "enrollment_count":
+            order_col = Course.enrollment_count
+        else:
+            order_col = Course.created_at
+        
+        if filters.sort_order == "asc":
+            query = query.order_by(order_col)
+        else:
+            query = query.order_by(desc(order_col))
+        
+        return paginate_query(query, page, per_page)
+
+    def get_featured_courses(self, limit: int = 10) -> List[Course]:
+        """Get featured courses"""
+        return self.db.query(Course).filter(
+            and_(Course.status == "published", Course.is_featured == True)
+        ).order_by(desc(Course.rating_average)).limit(limit).all()
+
+    def get_popular_courses(self, limit: int = 10) -> List[Course]:
+        """Get popular courses by enrollment count"""
+        return self.db.query(Course).filter(
+            Course.status == "published"
+        ).order_by(desc(Course.enrollment_count)).limit(limit).all()
+
+    # Enrollment Methods
+    def enroll_user(self, user_id: int, course_id: int) -> CourseEnrollment:
+        """Enroll a user in a course"""
+        # Check if course exists and is published
+        course = self.get_course_by_id(course_id)
+        if not course or course.status != "published":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Course not found or not available"
+            )
+        
+        # Check if user is already enrolled
+        existing_enrollment = self.db.query(CourseEnrollment).filter(
+            and_(
+                CourseEnrollment.user_id == user_id,
+                CourseEnrollment.course_id == course_id
+            )
+        ).first()
+        
+        if existing_enrollment:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User is already enrolled in this course"
+            )
+        
+        # Create enrollment
+        enrollment = CourseEnrollment(
+            user_id=user_id,
+            course_id=course_id,
+            enrolled_at=datetime.utcnow(),
+            status="active"
+        )
+        
+        self.db.add(enrollment)
+        
+        # Update course enrollment count
+        course.enrollment_count += 1
+        
+        self.db.commit()
+        self.db.refresh(enrollment)
         return enrollment
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to enroll in course: {str(e)}"
-        )
 
-@router.get("/enrollments/my", response_model=Dict[str, Any])
-async def get_my_enrollments(
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-    status: Optional[str] = Query(None),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get current user's course enrollments"""
-    
-    course_service = CourseService(db)
-    enrollments = course_service.get_user_enrollments(current_user.id, page, per_page, status)
-    
-    return create_response(data=enrollments, message="Enrollments retrieved successfully")
+    def get_enrollment(self, user_id: int, course_id: int) -> Optional[CourseEnrollment]:
+        """Get user enrollment for a course"""
+        return self.db.query(CourseEnrollment).filter(
+            and_(
+                CourseEnrollment.user_id == user_id,
+                CourseEnrollment.course_id == course_id
+            )
+        ).first()
 
-@router.get("/{course_id}/progress", response_model=Dict[str, Any])
-async def get_course_progress(
-    course_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get user's progress in a course"""
-    
-    course_service = CourseService(db)
-    progress = course_service.get_course_progress(current_user.id, course_id)
-    
-    return create_response(data=progress, message="Course progress retrieved successfully")
+    def get_user_enrollments(self, user_id: int, page: int, per_page: int, status: Optional[str] = None) -> Dict[str, Any]:
+        """Get user's course enrollments"""
+        query = self.db.query(CourseEnrollment).options(
+            joinedload(CourseEnrollment.course)
+        ).filter(CourseEnrollment.user_id == user_id)
+        
+        if status:
+            query = query.filter(CourseEnrollment.status == status)
+        
+        query = query.order_by(desc(CourseEnrollment.enrolled_at))
+        
+        return paginate_query(query, page, per_page)
 
-# Learning Routes
-@router.put("/lessons/{lesson_id}/progress", response_model=LessonProgressResponse)
-async def update_lesson_progress(
-    lesson_id: int,
-    progress_data: LessonProgressUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Update lesson progress"""
-    
-    course_service = CourseService(db)
-    
-    try:
-        progress = course_service.update_lesson_progress(
-            current_user.id, lesson_id, progress_data
-        )
+    # Progress Tracking Methods
+    def get_course_progress(self, user_id: int, course_id: int) -> Dict[str, Any]:
+        """Get user's progress in a course"""
+        enrollment = self.get_enrollment(user_id, course_id)
+        if not enrollment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Enrollment not found"
+            )
+        
+        course = self.get_course_by_id(course_id, include_modules=True)
+        
+        # Get all lessons in the course
+        total_lessons = 0
+        completed_lessons = 0
+        
+        for module in course.modules:
+            for lesson in module.lessons:
+                total_lessons += 1
+                
+                # Check if lesson is completed
+                progress = self.db.query(LessonProgress).filter(
+                    and_(
+                        LessonProgress.user_id == user_id,
+                        LessonProgress.lesson_id == lesson.id,
+                        LessonProgress.is_completed == True
+                    )
+                ).first()
+                
+                if progress:
+                    completed_lessons += 1
+        
+        progress_percentage = (completed_lessons / total_lessons * 100) if total_lessons > 0 else 0
+        
+        return {
+            "enrollment_id": enrollment.id,
+            "course_id": course_id,
+            "total_lessons": total_lessons,
+            "completed_lessons": completed_lessons,
+            "progress_percentage": round(progress_percentage, 2),
+            "status": enrollment.status,
+            "enrolled_at": enrollment.enrolled_at,
+            "last_accessed": enrollment.last_accessed_at
+        }
+
+    def update_lesson_progress(self, user_id: int, lesson_id: int, progress_data: LessonProgressUpdate) -> LessonProgress:
+        """Update lesson progress"""
+        # Check if lesson exists
+        lesson = self.db.query(CourseLesson).filter(CourseLesson.id == lesson_id).first()
+        if not lesson:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Lesson not found"
+            )
+        
+        # Check if user is enrolled in the course
+        enrollment = self.get_enrollment(user_id, lesson.module.course_id)
+        if not enrollment:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not enrolled in this course"
+            )
+        
+        # Get or create lesson progress
+        progress = self.db.query(LessonProgress).filter(
+            and_(
+                LessonProgress.user_id == user_id,
+                LessonProgress.lesson_id == lesson_id
+            )
+        ).first()
+        
+        if not progress:
+            progress = LessonProgress(
+                user_id=user_id,
+                lesson_id=lesson_id,
+                started_at=datetime.utcnow()
+            )
+            self.db.add(progress)
+        
+        # Update progress
+        update_data = progress_data.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(progress, field, value)
+        
+        if progress_data.is_completed and not progress.completed_at:
+            progress.completed_at = datetime.utcnow()
+        
+        progress.updated_at = datetime.utcnow()
+        
+        # Update enrollment last accessed
+        enrollment.last_accessed_at = datetime.utcnow()
+        
+        self.db.commit()
+        self.db.refresh(progress)
         return progress
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update progress: {str(e)}"
+
+    # Quiz Methods
+    def submit_quiz(self, user_id: int, lesson_id: int, quiz_submission: QuizSubmission) -> QuizResult:
+        """Submit quiz answers and calculate score"""
+        # Check if user has access to the lesson
+        lesson = self.db.query(CourseLesson).filter(CourseLesson.id == lesson_id).first()
+        if not lesson:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Lesson not found"
+            )
+        
+        enrollment = self.get_enrollment(user_id, lesson.module.course_id)
+        if not enrollment:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not enrolled in this course"
+            )
+        
+        # Calculate score (this is a simplified version)
+        total_questions = len(quiz_submission.answers)
+        correct_answers = 0
+        
+        # Here you would typically compare with stored correct answers
+        # For now, we'll assume a simple scoring mechanism
+        for answer in quiz_submission.answers:
+            # This is where you'd implement your quiz scoring logic
+            # For example, checking against stored correct answers
+            pass
+        
+        score_percentage = (correct_answers / total_questions * 100) if total_questions > 0 else 0
+        passed = score_percentage >= 70  # 70% passing grade
+        
+        # Update lesson progress if quiz is passed
+        if passed:
+            self.update_lesson_progress(
+                user_id, 
+                lesson_id, 
+                LessonProgressUpdate(is_completed=True, quiz_score=score_percentage)
+            )
+        
+        return QuizResult(
+            lesson_id=lesson_id,
+            score=score_percentage,
+            total_questions=total_questions,
+            correct_answers=correct_answers,
+            passed=passed,
+            submitted_at=datetime.utcnow()
         )
 
-@router.post("/lessons/{lesson_id}/quiz", response_model=QuizResult)
-async def submit_quiz(
-    lesson_id: int,
-    quiz_submission: QuizSubmission,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Submit quiz answers"""
-    
-    course_service = CourseService(db)
-    
-    try:
-        result = course_service.submit_quiz(current_user.id, lesson_id, quiz_submission)
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to submit quiz: {str(e)}"
+    # Review Methods
+    def create_review(self, user_id: int, review_data: CourseReviewCreate) -> CourseReview:
+        """Create a course review"""
+        # Check if user is enrolled in the course
+        enrollment = self.get_enrollment(user_id, review_data.course_id)
+        if not enrollment:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You must be enrolled in the course to leave a review"
+            )
+        
+        # Check if user has already reviewed this course
+        existing_review = self.db.query(CourseReview).filter(
+            and_(
+                CourseReview.user_id == user_id,
+                CourseReview.course_id == review_data.course_id
+            )
+        ).first()
+        
+        if existing_review:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You have already reviewed this course"
+            )
+        
+        review = CourseReview(
+            **review_data.dict(),
+            user_id=user_id,
+            created_at=datetime.utcnow()
         )
-
-# Review Routes
-@router.post("/{course_id}/reviews", response_model=CourseReviewResponse)
-async def create_course_review(
-    course_id: int,
-    review_data: CourseReviewCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Create a course review"""
-    
-    # Set course_id from URL parameter
-    review_data.course_id = course_id
-    
-    course_service = CourseService(db)
-    
-    try:
-        review = course_service.create_review(current_user.id, review_data)
+        
+        self.db.add(review)
+        self.db.commit()
+        self.db.refresh(review)
+        
+        # Update course rating average
+        self._update_course_rating(review_data.course_id)
+        
         return review
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create review: {str(e)}"
-        )
 
-# Certificate Routes
-@router.get("/{course_id}/certificate", response_model=CourseCertificateResponse)
-async def get_course_certificate(
-    course_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get course completion certificate"""
-    
-    course_service = CourseService(db)
-    enrollment = course_service.get_enrollment(current_user.id, course_id)
-    
-    if not enrollment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Enrollment not found"
-        )
-    
-    try:
-        certificate = course_service.generate_certificate(enrollment.id)
-        return certificate
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate certificate: {str(e)}"
-        )
-
-@router.get("/certificates/verify/{verification_code}", response_model=Dict[str, Any])
-async def verify_certificate(
-    verification_code: str,
-    db: Session = Depends(get_db)
-):
-    """Verify a course certificate"""
-    
-    course_service = CourseService(db)
-    certificate = course_service.verify_certificate(verification_code)
-    
-    if not certificate:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Certificate not found or invalid"
-        )
-    
-    return create_response(
-        data={
-            "valid": True,
-            "certificate": {
-                "number": certificate.certificate_number,
-                "course_title": certificate.enrollment.course.title,
-                "student_name": certificate.enrollment.user.full_name,
-                "completion_date": certificate.enrollment.completed_at.isoformat(),
-                "issued_date": certificate.issued_at.isoformat()
-            }
-        },
-        message="Certificate verified successfully"
-    )
-
-# Analytics Routes
-@router.get("/analytics/my-learning", response_model=UserCourseAnalytics)
-async def get_my_learning_analytics(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get user's learning analytics"""
-    
-    course_service = CourseService(db)
-    analytics = course_service.get_user_learning_analytics(current_user.id)
-    
-    return analytics
-
-# Admin Routes
-@router.post("/", response_model=CourseResponse)
-async def create_course(
-    course_data: CourseCreate,
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Create a new course (admin only)"""
-    
-    course_service = CourseService(db)
-    
-    try:
-        course = course_service.create_course(course_data, current_admin.id)
-        return course
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create course: {str(e)}"
-        )
-
-@router.put("/{course_id}", response_model=CourseResponse)
-async def update_course(
-    course_id: int,
-    course_data: CourseUpdate,
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Update a course (admin only)"""
-    
-    course_service = CourseService(db)
-    
-    try:
-        course = course_service.update_course(course_id, course_data)
-        return course
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update course: {str(e)}"
-        )
-
-@router.delete("/{course_id}", response_model=Dict[str, Any])
-async def delete_course(
-    course_id: int,
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Delete a course (admin only)"""
-    
-    course_service = CourseService(db)
-    
-    try:
-        success = course_service.delete_course(course_id)
-        return create_response(
-            data={"deleted": success},
-            message="Course deleted successfully"
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete course: {str(e)}"
-        )
-
-@router.post("/{course_id}/upload-thumbnail", response_model=Dict[str, Any])
-async def upload_course_thumbnail(
-    course_id: int,
-    file: UploadFile = File(...),
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Upload course thumbnail image (admin only)"""
-    
-    # Verify course exists
-    course_service = CourseService(db)
-    course = course_service.get_course_by_id(course_id)
-    
-    if not course:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
-        )
-    
-    # Upload file
-    file_service = FileService()
-    
-    try:
-        file_info = await file_service.upload_image(
-            file=file,
-            directory="courses",
-            user_id=current_admin.id
-        )
+    def get_course_reviews(self, course_id: int, page: int, per_page: int) -> Dict[str, Any]:
+        """Get course reviews with pagination"""
+        query = self.db.query(CourseReview).options(
+            joinedload(CourseReview.user)
+        ).filter(
+            and_(
+                CourseReview.course_id == course_id,
+                CourseReview.is_approved == True
+            )
+        ).order_by(desc(CourseReview.created_at))
         
-        # Update course thumbnail
-        course.thumbnail_url = file_info["file_url"]
-        db.commit()
+        return paginate_query(query, page, per_page)
+
+    def _update_course_rating(self, course_id: int):
+        """Update course average rating"""
+        avg_rating = self.db.query(func.avg(CourseReview.rating)).filter(
+            and_(
+                CourseReview.course_id == course_id,
+                CourseReview.is_approved == True
+            )
+        ).scalar()
         
-        return create_response(
-            data=file_info,
-            message="Thumbnail uploaded successfully"
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload thumbnail: {str(e)}"
-        )
-
-# Module Management Routes (Admin)
-@router.post("/{course_id}/modules", response_model=CourseModuleResponse)
-async def create_course_module(
-    course_id: int,
-    module_data: CourseModuleCreate,
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Create a course module (admin only)"""
-    
-    # Set course_id from URL parameter
-    module_data.course_id = course_id
-    
-    course_service = CourseService(db)
-    
-    try:
-        module = course_service.create_module(module_data)
-        return module
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create module: {str(e)}"
-        )
-
-@router.post("/modules/{module_id}/lessons", response_model=CourseLessonResponse)
-async def create_course_lesson(
-    module_id: int,
-    lesson_data: CourseLessonCreate,
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Create a course lesson (admin only)"""
-    
-    # Set module_id from URL parameter
-    lesson_data.module_id = module_id
-    
-    course_service = CourseService(db)
-    
-    try:
-        lesson = course_service.create_lesson(lesson_data)
-        return lesson
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create lesson: {str(e)}"
-        )
-
-# Course Analytics (Admin)
-@router.get("/{course_id}/analytics", response_model=CourseAnalytics)
-async def get_course_analytics(
-    course_id: int,
-    days: int = Query(30, ge=1, le=365),
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Get course analytics (admin only)"""
-    
-    course_service = CourseService(db)
-    
-    try:
-        analytics = course_service.get_course_analytics(course_id, days)
-        return analytics
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get analytics: {str(e)}"
-        )
-
-@router.get("/admin/enrollments", response_model=Dict[str, Any])
-async def get_all_enrollments(
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-    course_id: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Get all course enrollments (admin only)"""
-    
-    query = db.query(CourseEnrollment).options(
-        joinedload(CourseEnrollment.course),
-        joinedload(CourseEnrollment.user)
-    )
-    
-    if course_id:
-        query = query.filter(CourseEnrollment.course_id == course_id)
-    
-    if status:
-        query = query.filter(CourseEnrollment.status == status)
-    
-    query = query.order_by(desc(CourseEnrollment.enrolled_at))
-    
-    from app.utils.helpers import paginate_query
-    enrollments = paginate_query(query, page, per_page)
-    
-    return create_response(data=enrollments, message="Enrollments retrieved successfully")
-
-@router.get("/admin/reviews", response_model=Dict[str, Any])
-async def get_all_reviews(
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-    course_id: Optional[int] = Query(None),
-    is_approved: Optional[bool] = Query(None),
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Get all course reviews (admin only)"""
-    
-    from app.models.course import CourseReview
-    
-    query = db.query(CourseReview).options(
-        joinedload(CourseReview.course),
-        joinedload(CourseReview.user)
-    )
-    
-    if course_id:
-        query = query.filter(CourseReview.course_id == course_id)
-    
-    if is_approved is not None:
-        query = query.filter(CourseReview.is_approved == is_approved)
-    
-    query = query.order_by(desc(CourseReview.created_at))
-    
-    from app.utils.helpers import paginate_query
-    reviews = paginate_query(query, page, per_page)
-    
-    return create_response(data=reviews, message="Reviews retrieved successfully")
-
-@router.put("/admin/reviews/{review_id}/approve", response_model=Dict[str, Any])
-async def approve_review(
-    review_id: int,
-    approved: bool,
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Approve or reject a course review (admin only)"""
-    
-    from app.models.course import CourseReview
-    
-    review = db.query(CourseReview).filter(CourseReview.id == review_id).first()
-    if not review:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Review not found"
-        )
-    
-    review.is_approved = approved
-    db.commit()
-    
-    return create_response(
-        data={
-            "review_id": review_id,
-            "approved": approved
-        },
-        message=f"Review {'approved' if approved else 'rejected'} successfully"
-    )
-
-# Bulk Operations (Admin)
-@router.post("/admin/bulk-publish", response_model=Dict[str, Any])
-async def bulk_publish_courses(
-    course_ids: List[int],
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Bulk publish courses (admin only)"""
-    
-    updated_count = 0
-    
-    for course_id in course_ids:
-        course = db.query(Course).filter(Course.id == course_id).first()
+        review_count = self.db.query(CourseReview).filter(
+            and_(
+                CourseReview.course_id == course_id,
+                CourseReview.is_approved == True
+            )
+        ).count()
+        
+        course = self.get_course_by_id(course_id)
         if course:
-            course.status = "published"
-            if not course.published_at:
-                course.published_at = datetime.utcnow()
-            updated_count += 1
-    
-    db.commit()
-    
-    return create_response(
-        data={
-            "updated_count": updated_count,
-            "total_requested": len(course_ids)
-        },
-        message=f"Successfully published {updated_count} courses"
-    )
+            course.rating_average = round(avg_rating, 2) if avg_rating else 0.0
+            course.rating_count = review_count
+            self.db.commit()
 
-# Search and Discovery
-@router.get("/search/my-courses", response_model=List[CourseResponse])
-async def search_my_courses(
-    q: str = Query(..., min_length=1),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Search user's enrolled courses"""
-    
-    course_service = CourseService(db)
-    courses = course_service.search_user_courses(current_user.id, q)
-    
-    return courses
+    # Certificate Methods
+    def generate_certificate(self, enrollment_id: int) -> CourseCertificate:
+        """Generate course completion certificate"""
+        enrollment = self.db.query(CourseEnrollment).filter(
+            CourseEnrollment.id == enrollment_id
+        ).first()
+        
+        if not enrollment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Enrollment not found"
+            )
+        
+        if enrollment.status != "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Course not completed yet"
+            )
+        
+        # Check if certificate already exists
+        existing_cert = self.db.query(CourseCertificate).filter(
+            CourseCertificate.enrollment_id == enrollment_id
+        ).first()
+        
+        if existing_cert:
+            return existing_cert
+        
+        # Generate certificate
+        certificate = CourseCertificate(
+            enrollment_id=enrollment_id,
+            certificate_number=f"CERT-{uuid.uuid4().hex[:12].upper()}",
+            verification_code=uuid.uuid4().hex,
+            issued_at=datetime.utcnow()
+        )
+        
+        self.db.add(certificate)
+        self.db.commit()
+        self.db.refresh(certificate)
+        return certificate
 
-# Course Statistics (Admin)
-@router.get("/admin/stats", response_model=Dict[str, Any])
-async def get_course_system_stats(
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Get course system statistics (admin only)"""
-    
-    total_courses = db.query(Course).count()
-    published_courses = db.query(Course).filter(Course.status == "published").count()
-    draft_courses = db.query(Course).filter(Course.status == "draft").count()
-    
-    total_enrollments = db.query(CourseEnrollment).count()
-    completed_enrollments = db.query(CourseEnrollment).filter(
-        CourseEnrollment.status == "completed"
-    ).count()
-    
-    from app.models.course import CourseReview
-    total_reviews = db.query(CourseReview).count()
-    approved_reviews = db.query(CourseReview).filter(
-        CourseReview.is_approved == True
-    ).count()
-    
-    # Top performing courses
-    top_courses = db.query(Course).filter(
-        Course.status == "published"
-    ).order_by(desc(Course.enrollment_count)).limit(5).all()
-    
-    return create_response(
-        data={
-            "courses": {
-                "total": total_courses,
-                "published": published_courses,
-                "draft": draft_courses
-            },
-            "enrollments": {
-                "total": total_enrollments,
-                "completed": completed_enrollments,
-                "completion_rate": (completed_enrollments / total_enrollments * 100) if total_enrollments > 0 else 0
-            },
-            "reviews": {
-                "total": total_reviews,
-                "approved": approved_reviews,
-                "approval_rate": (approved_reviews / total_reviews * 100) if total_reviews > 0 else 0
-            },
-            "top_courses": [
-                {
-                    "id": course.id,
-                    "title": course.title,
-                    "enrollments": course.enrollment_count,
-                    "rating": course.rating_average,
-                    "completion_rate": course.completion_rate
-                }
-                for course in top_courses
-            ]
-        },
-        message="Course system statistics retrieved successfully"
-    )
+    def verify_certificate(self, verification_code: str) -> Optional[CourseCertificate]:
+        """Verify a course certificate"""
+        return self.db.query(CourseCertificate).filter(
+            CourseCertificate.verification_code == verification_code
+        ).first()
+
+    # Module and Lesson Methods
+    def create_module(self, module_data: CourseModuleCreate) -> CourseModule:
+        """Create a course module"""
+        module = CourseModule(
+            **module_data.dict(),
+            created_at=datetime.utcnow()
+        )
+        
+        self.db.add(module)
+        self.db.commit()
+        self.db.refresh(module)
+        return module
+
+    def create_lesson(self, lesson_data: CourseLessonCreate) -> CourseLesson:
+        """Create a course lesson"""
+        lesson = CourseLesson(
+            **lesson_data.dict(),
+            created_at=datetime.utcnow()
+        )
+        
+        self.db.add(lesson)
+        self.db.commit()
+        self.db.refresh(lesson)
+        return lesson
+
+    # Analytics Methods
+    def get_course_analytics(self, course_id: int, days: int = 30) -> CourseAnalytics:
+        """Get course analytics"""
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+        
+        # Get enrollments in date range
+        enrollments = self.db.query(CourseEnrollment).filter(
+            and_(
+                CourseEnrollment.course_id == course_id,
+                CourseEnrollment.enrolled_at >= start_date
+            )
+        ).count()
+        
+        # Get completions in date range
+        completions = self.db.query(CourseEnrollment).filter(
+            and_(
+                CourseEnrollment.course_id == course_id,
+                CourseEnrollment.status == "completed",
+                CourseEnrollment.completed_at >= start_date
+            )
+        ).count()
+        
+        # Get total enrollments
+        total_enrollments = self.db.query(CourseEnrollment).filter(
+            CourseEnrollment.course_id == course_id
+        ).count()
+        
+        # Get average rating
+        avg_rating = self.db.query(func.avg(CourseReview.rating)).filter(
+            and_(
+                CourseReview.course_id == course_id,
+                CourseReview.is_approved == True
+            )
+        ).scalar()
+        
+        return CourseAnalytics(
+            course_id=course_id,
+            period_days=days,
+            new_enrollments=enrollments,
+            completions=completions,
+            total_enrollments=total_enrollments,
+            completion_rate=(completions / total_enrollments * 100) if total_enrollments > 0 else 0,
+            average_rating=round(avg_rating, 2) if avg_rating else 0.0
+        )
+
+    def get_user_learning_analytics(self, user_id: int) -> UserCourseAnalytics:
+        """Get user's learning analytics"""
+        # Get user's enrollments
+        enrollments = self.db.query(CourseEnrollment).filter(
+            CourseEnrollment.user_id == user_id
+        ).all()
+        
+        total_courses = len(enrollments)
+        completed_courses = len([e for e in enrollments if e.status == "completed"])
+        in_progress_courses = len([e for e in enrollments if e.status == "active"])
+        
+        # Calculate total learning time (simplified)
+        total_learning_time = 0
+        for enrollment in enrollments:
+            if enrollment.last_accessed_at and enrollment.enrolled_at:
+                total_learning_time += (enrollment.last_accessed_at - enrollment.enrolled_at).total_seconds()
+        
+        return UserCourseAnalytics(
+            user_id=user_id,
+            total_courses_enrolled=total_courses,
+            courses_completed=completed_courses,
+            courses_in_progress=in_progress_courses,
+            total_learning_time_hours=round(total_learning_time / 3600, 2),
+            completion_rate=(completed_courses / total_courses * 100) if total_courses > 0 else 0
+        )
+
+    def search_user_courses(self, user_id: int, query: str) -> List[Course]:
+        """Search user's enrolled courses"""
+        search_term = f"%{query}%"
+        
+        courses = self.db.query(Course).join(CourseEnrollment).filter(
+            and_(
+                CourseEnrollment.user_id == user_id,
+                or_(
+                    Course.title.ilike(search_term),
+                    Course.description.ilike(search_term)
+                )
+            )
+        ).all()
+        
+        return courses
