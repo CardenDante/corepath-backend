@@ -44,6 +44,7 @@ def create_tables():
         # Import all models to ensure they're registered
         from app.models.user import User, UserProfile
         from app.models.product import Product, Category, ProductImage, ProductVariant, ProductReview, ProductTag
+        from app.models.order import Order, OrderItem, ShoppingCart, CartItem, Payment, Coupon, CouponUsage
         # More models will be imported as we add them
         
         # Create all tables

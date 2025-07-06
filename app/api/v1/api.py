@@ -5,7 +5,7 @@ Main router that includes all endpoint routers
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, users, products
+from app.api.v1.endpoints import auth, users, products, cart, orders
 
 # Create main API router
 api_router = APIRouter()
@@ -29,6 +29,20 @@ api_router.include_router(
     products.router,
     prefix="/products",
     tags=["Products"]
+)
+
+# Include cart routes
+api_router.include_router(
+    cart.router,
+    prefix="/cart",
+    tags=["Shopping Cart"]
+)
+
+# Include order routes
+api_router.include_router(
+    orders.router,
+    prefix="/orders",
+    tags=["Orders"]
 )
 
 # Health check for API
