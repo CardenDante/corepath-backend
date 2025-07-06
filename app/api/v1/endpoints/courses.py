@@ -4,9 +4,11 @@ CorePath Impact Course API Endpoints
 Phase 5: Course management and learning system
 """
 
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
-from sqlalchemy.orm import Session
+from sqlalchemy import desc
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, get_current_admin, get_optional_user
