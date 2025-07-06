@@ -1,4 +1,3 @@
-# app/core/database.py - Created by setup script
 """
 CorePath Impact Database Configuration
 SQLite database setup with SQLAlchemy
@@ -44,6 +43,7 @@ def create_tables():
     try:
         # Import all models to ensure they're registered
         from app.models.user import User, UserProfile
+        from app.models.product import Product, Category, ProductImage, ProductVariant, ProductReview, ProductTag
         # More models will be imported as we add them
         
         # Create all tables
