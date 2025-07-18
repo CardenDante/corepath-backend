@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 # Configuration
 APP_NAME="corepath-backend"
 DOMAIN="api.chach-a.com"
-EMAIL="your-email@example.com"  # Change this to your email
+EMAIL="cardendante@gmail.com"  # Change this to your email
 
 # Check if running as root and warn (but allow)
 if [[ $EUID -eq 0 ]]; then
